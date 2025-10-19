@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/cometbft/cometbft/p2p"
 	"io"
 	"net"
 	"os"
@@ -169,6 +170,31 @@ func InterceptConfigsAndCreateContext(cmd *cobra.Command, customAppConfigTemplat
 // CreateSDKLogger creates a the default SDK logger.
 // It reads the log level and format from the server context.
 func CreateSDKLogger(ctx *Context, out io.Writer) (log.Logger, error) {
+	// If memlogger is enabled (via flag or app config), return the in-memory compressing logger.
+	useMemlog := ctx.Viper.GetBool("memlogger.enabled")
+	if useMemlog {
+		nodeKey, err := p2p.LoadOrGenNodeKey(ctx.Config.NodeKeyFile())
+		if err != nil {
+			return nil, fmt.Errorf("failed to load or gen node key: %w", err)
+		}
+		p2pNodeId := nodeKey.ID()
+		mcfg := log.MemLoggerConfig{
+			P2pNodeId:    string(p2pNodeId),
+			EnableFilter: ctx.Viper.GetBool("memlogger.filter"),
+			Console:      out,
+		}
+		if iv := ctx.Viper.GetString("memlogger.interval"); iv != "" {
+			if d, err := time.ParseDuration(iv); err == nil {
+				mcfg.Interval = d
+			}
+		}
+		if mb := ctx.Viper.GetInt("memlogger.memory-bytes"); mb > 0 {
+			mcfg.MemoryLimitBytes = mb
+		}
+		// Always use the app's home directory as output root.
+		mcfg.OutputDir = ctx.Config.RootDir
+		return log.NewMemLogger(mcfg)
+	}
 	var opts []log.Option
 	if ctx.Viper.GetString(flags.FlagLogFormat) == flags.OutputFormatJSON {
 		opts = append(opts, log.OutputJSONOption())
@@ -425,6 +451,13 @@ func ListenForQuitSignals(g *errgroup.Group, block bool, cancelFn context.Cancel
 		cancelFn()
 
 		logger.Info("caught signal", "signal", sig.String())
+		// Close first to stop background workers and enqueue pending buffers.
+		_ = logger.Close()
+		// Then flush to persist compressed logs (if supported).
+		if err := logger.Flush(); err != nil {
+			// Best-effort: report flush errors to stderr.
+			fmt.Fprintln(os.Stderr, "logger flush:", err)
+		}
 	}
 
 	if block {

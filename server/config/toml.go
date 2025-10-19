@@ -133,6 +133,32 @@ statsd-addr = "{{ .Telemetry.StatsdAddr }}"
 datadog-hostname = "{{ .Telemetry.DatadogHostname }}"
 
 ###############################################################################
+###                        MemLogger Configuration                          ###
+###############################################################################
+
+[memlogger]
+
+# Enable defines if the in-memory compressing logger should be used.
+enabled = {{ .MemLogger.Enabled }}
+
+# Filter controls whether memlogger filters messages by an allow-list.
+# Set to true to apply filtering; false disables it.
+filter = {{ .MemLogger.Filter }}
+
+# Interval controls how often the current in-memory buffer is compressed
+# and appended to the WAL. Examples: "2s", "1m". Set to "0" to disable
+# time-based flushing (size-only mode, if memory-bytes > 0).
+interval = "{{ .MemLogger.Interval }}"
+
+# MemoryBytes caps the uncompressed bytes held in memory. When reached,
+# the buffer is immediately compressed and appended to the WAL. 0 disables
+# the size trigger (timer-only).
+memory-bytes = {{ .MemLogger.MemoryBytes }}
+
+# Dir is the application root; WAL files are stored under "<dir>/log.wal/...".
+dir = "{{ .MemLogger.Dir }}"
+
+###############################################################################
 ###                           API Configuration                             ###
 ###############################################################################
 

@@ -183,6 +183,23 @@ type (
 		Plugin        string   `mapstructure:"plugin"`
 		StopNodeOnErr bool     `mapstructure:"stop-node-on-err"`
 	}
+
+	// MemLoggerConfig defines configuration for the in-memory compressing logger.
+	// Keep it minimal and unambiguous: a timer trigger, a memory cap, and an
+	// optional output directory (where WAL files are stored).
+	MemLoggerConfig struct {
+		// Enabled toggles the in-memory compressing logger with WAL appends.
+		Enabled bool `mapstructure:"enabled"`
+		// Interval: compress + append to WAL on this cadence (e.g. "2s").
+		Interval string `mapstructure:"interval"`
+		// MemoryBytes: maximum uncompressed bytes to keep before an immediate
+		// compress + append to WAL. Use 0 to rely only on Interval.
+		MemoryBytes int `mapstructure:"memory-bytes"`
+		// Dir: app root (WAL is placed under "<dir>/log.wal/..."). Optional.
+		Dir string `mapstructure:"dir"`
+		// Filter enables message allow-list filtering when true.
+		Filter bool `mapstructure:"filter"`
+	}
 )
 
 // Config defines the server's top level configuration
@@ -197,6 +214,8 @@ type Config struct {
 	StateSync StateSyncConfig  `mapstructure:"state-sync"`
 	Streaming StreamingConfig  `mapstructure:"streaming"`
 	Mempool   MempoolConfig    `mapstructure:"mempool"`
+	// MemLogger defines optional in-memory logger configuration.
+	MemLogger MemLoggerConfig `mapstructure:"memlogger"`
 }
 
 // SetMinGasPrices sets the validator's minimum gas prices.
@@ -268,6 +287,13 @@ func DefaultConfig() *Config {
 		},
 		Mempool: MempoolConfig{
 			MaxTxs: -1,
+		},
+		MemLogger: MemLoggerConfig{
+			Enabled:     true,
+			Interval:    "2s",
+			MemoryBytes: 0,
+			Dir:         "",
+			Filter:      true,
 		},
 	}
 }

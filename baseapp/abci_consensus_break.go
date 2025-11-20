@@ -62,13 +62,13 @@ func (app *BaseApp) FinalizeBlock(req *abci.RequestFinalizeBlock) (res *abci.Res
 
 // injectConsensusBreak is a test helper function to inject non-determinism
 // into the app hash, causing a consensus failure at configurable intervals.
-// Environment variables: ENABLE_CONSENSUS_BREAK=true, CONSENSUS_BREAK_INTERVAL=N (default: 10)
+// Environment variables: ENABLE_CONSENSUS_BREAK=true, CONSENSUS_BREAK_INTERVAL=N (default: 2)
 func injectConsensusBreak(app *BaseApp, appHash []byte, height int64, path string) []byte {
 	if os.Getenv("ENABLE_CONSENSUS_BREAK") != "true" {
 		return appHash
 	}
 
-	interval := int64(10)
+	interval := int64(2)
 	if envInterval := os.Getenv("CONSENSUS_BREAK_INTERVAL"); envInterval != "" {
 		if parsed, err := strconv.ParseInt(envInterval, 10, 64); err == nil && parsed > 0 {
 			interval = parsed

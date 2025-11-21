@@ -3,7 +3,9 @@ package baseapp
 import (
 	"context"
 	"fmt"
+	"os"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -888,7 +890,10 @@ func (app *BaseApp) FinalizeBlock(req *abci.RequestFinalizeBlock) (res *abci.Res
 		// only return if we are not aborting
 		if !aborted {
 			if res != nil {
-				res.AppHash = app.workingHash()
+				appHash := app.workingHash()
+
+				// CONSENSUS BREAK TEST: Inject consensus breaking for the OE path.
+				res.AppHash = injectConsensusBreakTest(app, appHash, req.Height, "Optimistic Execution path")
 			}
 
 			return res, err
@@ -902,7 +907,10 @@ func (app *BaseApp) FinalizeBlock(req *abci.RequestFinalizeBlock) (res *abci.Res
 	// if no OE is running, just run the block (this is either a block replay or a OE that got aborted)
 	res, err = app.internalFinalizeBlock(context.Background(), req)
 	if res != nil {
-		res.AppHash = app.workingHash()
+		appHash := app.workingHash()
+
+		// CONSENSUS BREAK TEST: Inject consensus breaking for the non-OE/aborted OE path.
+		res.AppHash = injectConsensusBreakTest(app, appHash, req.Height, "Normal/Aborted OE path")
 	}
 
 	return res, err
@@ -1389,4 +1397,62 @@ func toVoteInfo(votes []abci.ExtendedVoteInfo) []abci.VoteInfo {
 	}
 
 	return legacyVotes
+}
+
+// injectConsensusBreakTest is a test helper function to inject non-determinism
+// into the app hash, causing a consensus failure at configurable intervals.
+//
+// Simulates multi-node desync scenarios including:
+// - AppHash mismatch (primary mechanism)
+// - Network delays (optional)
+// - Message drops (optional)
+//
+// Environment variables:
+//   - ENABLE_CONSENSUS_BREAK=true: enables consensus break testing
+//   - CONSENSUS_BREAK_INTERVAL=N: inject break every N blocks (default: 2)
+//   - CONSENSUS_BREAK_DELAY_MS=N: add processing delay in milliseconds (simulates network lag)
+func injectConsensusBreakTest(app *BaseApp, appHash []byte, height int64, path string) []byte {
+	if os.Getenv("ENABLE_CONSENSUS_BREAK") != "true" {
+		return appHash
+	}
+
+	interval := int64(2)
+	if envInterval := os.Getenv("CONSENSUS_BREAK_INTERVAL"); envInterval != "" {
+		if parsed, err := strconv.ParseInt(envInterval, 10, 64); err == nil && parsed > 0 {
+			interval = parsed
+		}
+	}
+
+	// Simulate network delay (gossip miss, message propagation delay)
+	if delayMS := os.Getenv("CONSENSUS_BREAK_DELAY_MS"); delayMS != "" {
+		if delay, err := strconv.ParseInt(delayMS, 10, 64); err == nil && delay > 0 {
+			time.Sleep(time.Duration(delay) * time.Millisecond)
+			app.logger.Warn(
+				"network delay injected",
+				"height", height,
+				"delay_ms", delay,
+				"path", path,
+			)
+		}
+	}
+
+	if height > 0 && height%interval == 0 {
+		timeNano := time.Now().UnixNano()
+		timeBytes := []byte(fmt.Sprintf("%d", timeNano))
+		modifiedHash := append(appHash, timeBytes...)
+
+		app.logger.Error(
+			"consensus break injected: AppHash mismatch",
+			"path", path,
+			"height", height,
+			"interval", interval,
+			"original_hash", fmt.Sprintf("%X", appHash),
+			"modified_hash", fmt.Sprintf("%X", modifiedHash),
+			"time_injected", timeNano,
+		)
+
+		return modifiedHash
+	}
+
+	return appHash
 }

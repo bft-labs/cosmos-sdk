@@ -1,4 +1,4 @@
-package memlogger
+package memlogger_test
 
 import (
 	"bufio"
@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	sdklog "github.com/cosmos/cosmos-sdk/log"
+	sdklog "cosmossdk.io/log"
 )
 
 // Test end-to-end: write via MemLogger (WAL with framed gzip + .idx),

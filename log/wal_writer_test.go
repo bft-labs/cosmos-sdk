@@ -6,34 +6,12 @@ import (
 	"encoding/json"
 	"hash/crc32"
 	"io"
-	"math/rand"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
 )
-
-// gzipBytes compresses the input using gzip and returns the compressed bytes.
-func gzipBytes(p []byte) []byte {
-	var buf bytes.Buffer
-	zw, _ := gzip.NewWriterLevel(&buf, gzip.BestSpeed)
-	_, _ = zw.Write(p)
-	_ = zw.Close()
-	return buf.Bytes()
-}
-
-// makeIncompressible returns a deterministic, pseudo-random byte slice of length n.
-// Using a fixed seed ensures reproducible sizes in tests.
-func makeIncompressible(n int) []byte {
-	b := make([]byte, n)
-	r := rand.New(rand.NewSource(1))
-	for i := range b {
-		b[i] = byte(r.Intn(256))
-	}
-	return b
-}
 
 // TestWalWriter_AppendAndSync verifies basic append and sync behavior.
 func TestWalWriter_AppendAndSync(t *testing.T) {
@@ -197,22 +175,6 @@ func BenchmarkWalWriter_BufSizeVsChunk(b *testing.B) {
 				})
 			}
 		})
-	}
-}
-
-// byteSize formats an integer byte count as a short label, e.g., "64KiB".
-func byteSize(n int) string {
-	const (
-		KiB = 1 << 10
-		MiB = 1 << 20
-	)
-	switch {
-	case n >= MiB:
-		return strconv.Itoa(n/MiB) + "MiB"
-	case n >= KiB:
-		return strconv.Itoa(n/KiB) + "KiB"
-	default:
-		return strconv.Itoa(n) + "B"
 	}
 }
 

@@ -97,6 +97,8 @@ func newWalWriter(cfg walWriterConfig) (*walWriter, error) {
 	return w, nil
 }
 
+// Close flushes any buffered data, performs an fsync, and closes the WAL segment
+// and index files. After Close() returns, the walWriter must not be used.
 func (w *walWriter) Close() error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -135,9 +137,14 @@ func (w *walWriter) Close() error {
 	return nil
 }
 
+// Sync flushes buffered writes and calls fdatasync (Linux) or fsync (other platforms)
+// to ensure durability. Safe to call concurrently.
 func (w *walWriter) Sync() error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
+	if w.stopped {
+		return nil // Already closed; Sync is a no-op.
+	}
 	if w.bw != nil {
 		if err := w.bw.Flush(); err != nil {
 			return err
@@ -238,6 +245,8 @@ func (w *walWriter) AppendCompressedWithMeta(member []byte, recs uint32, firstTS
 	return nil
 }
 
+// rotateLocked closes the current segment and opens a new one. If first is true,
+// skips closing logic (used on initial segment creation). Caller must hold w.mu.
 func (w *walWriter) rotateLocked(first bool) error {
 	if !first {
 		if w.bw != nil {
@@ -296,6 +305,8 @@ func (w *walWriter) rotateLocked(first bool) error {
 	return nil
 }
 
+// nextSegmentIndex scans the directory for existing segment files and returns
+// the next available index number (max + 1). Returns 1 if the directory is empty.
 func nextSegmentIndex(dir string) (int, error) {
 	d, err := os.ReadDir(dir)
 	if errors.Is(err, os.ErrNotExist) {

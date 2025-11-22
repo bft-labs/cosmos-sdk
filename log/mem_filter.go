@@ -3,8 +3,8 @@ package log
 import "strings"
 
 // buildDefaultAllowedMsgs returns a lowercased allow-list for messages
-// that should be recorded by memlogger when filtering is enabled. Matching is case-insensitive and uses
-// exact string equality after lowercasing.
+// that should be recorded by memlogger when filtering is enabled.
+// Matching is case-insensitive and uses exact string equality after lowercasing.
 func buildDefaultAllowedMsgs() map[string]struct{} {
 	msgs := []string{
 		// Node identity

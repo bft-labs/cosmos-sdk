@@ -8,7 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -60,8 +59,8 @@ type MemLoggerConfig struct {
 // It periodically compresses the buffer into gzip chunks to limit growth,
 // and can flush all chunks (concatenated gzip streams) to disk.
 type MemLogger struct {
-	agg *memAggregator
-	ctx []any
+	magg *memAggregator
+	ctx  []any
 }
 
 // Ensure MemLogger implements the SDK Logger interface.
@@ -87,20 +86,20 @@ func NewMemLogger(cfg MemLoggerConfig) (Logger, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &MemLogger{agg: agg}, nil
+	return &MemLogger{magg: agg}, nil
 }
 
 // Info logs a message at level info.
-func (l *MemLogger) Info(msg string, keyVals ...any) { l.agg.append("info", l.ctx, msg, keyVals...) }
+func (l *MemLogger) Info(msg string, keyVals ...any) { l.magg.append("info", l.ctx, msg, keyVals...) }
 
 // Warn logs a message at level warn.
-func (l *MemLogger) Warn(msg string, keyVals ...any) { l.agg.append("warn", l.ctx, msg, keyVals...) }
+func (l *MemLogger) Warn(msg string, keyVals ...any) { l.magg.append("warn", l.ctx, msg, keyVals...) }
 
 // Error logs a message at level error.
-func (l *MemLogger) Error(msg string, keyVals ...any) { l.agg.append("error", l.ctx, msg, keyVals...) }
+func (l *MemLogger) Error(msg string, keyVals ...any) { l.magg.append("error", l.ctx, msg, keyVals...) }
 
 // Debug logs a message at level debug.
-func (l *MemLogger) Debug(msg string, keyVals ...any) { l.agg.append("debug", l.ctx, msg, keyVals...) }
+func (l *MemLogger) Debug(msg string, keyVals ...any) { l.magg.append("debug", l.ctx, msg, keyVals...) }
 
 // With returns a child logger that adds the provided keyvals to each event.
 func (l *MemLogger) With(keyVals ...any) Logger {
@@ -108,42 +107,33 @@ func (l *MemLogger) With(keyVals ...any) Logger {
 	newCtx := make([]any, 0, len(l.ctx)+len(keyVals))
 	newCtx = append(newCtx, l.ctx...)
 	newCtx = append(newCtx, keyVals...)
-	return &MemLogger{agg: l.agg, ctx: newCtx}
+	return &MemLogger{magg: l.magg, ctx: newCtx}
 }
 
 // Impl returns the underlying implementation (self).
 func (l *MemLogger) Impl() any { return l }
 
-// FlushToWriter writes all compressed chunks followed by the current in-flight
-// buffer (as a final gzip chunk) to the provided writer. The output is a valid
-// sequence of concatenated gzip streams.
-func (l *MemLogger) FlushToWriter(w io.Writer) error { return l.agg.flushToWriter(w) }
-
-// FlushToFile writes the compressed stream sequence to the given file path.
-// If the file exists, it will be truncated.
-func (l *MemLogger) FlushToFile(path string) error { return l.agg.flushToFile(path) }
-
 // Close stops the background compressor goroutine. It does not flush.
-func (l *MemLogger) Close() error { l.agg.close(); return nil }
-
-// DumpUncompressed writes all logs as plain JSONL without compression.
-func (l *MemLogger) DumpUncompressed(w io.Writer) error { return l.agg.dumpUncompressed(w) }
+func (l *MemLogger) Close() error { l.magg.close(); return nil }
 
 // Flush compresses any pending in-memory buffer, appends it to the WAL,
 // and performs an fsync to ensure durability.
 func (l *MemLogger) Flush() error {
 	// Forced WAL mode: compress any pending buffer and fsync.
-	if l.agg.wal == nil {
+	if l.magg.wal == nil {
 		return errors.New("memlogger: WAL not initialized")
 	}
-	if err := l.agg.flushToWAL(); err != nil {
+	if err := l.magg.flushToWAL(); err != nil {
 		return err
 	}
-	return l.agg.wal.Sync()
+	return l.magg.wal.Sync()
 }
 
 // ---- Internal aggregator ----
 
+// memAggregator buffers log events in memory, compresses them periodically,
+// and appends compressed chunks to a WAL. It manages time-based and size-based
+// flushing policies, a compression worker pool, and an optional message filter.
 type memAggregator struct {
 	cfg MemLoggerConfig
 
@@ -196,6 +186,9 @@ type workItem struct {
 	lastTS  int64
 }
 
+// newMemAggregator creates and initializes a memAggregator with the given configuration.
+// It starts background goroutines for periodic flushing (if enabled) and compression.
+// Returns an error if WAL initialization fails.
 func newMemAggregator(cfg MemLoggerConfig) (*memAggregator, error) {
 	m := &memAggregator{
 		cfg:    cfg,
@@ -257,23 +250,29 @@ func newMemAggregator(cfg MemLoggerConfig) (*memAggregator, error) {
 	return m, nil
 }
 
-func (m *memAggregator) run() {
-	defer m.wg.Done()
+// run is the periodic flushing goroutine that triggers buffer compression
+// at the configured interval. It runs only when Interval > 0.
+func (magg *memAggregator) run() {
+	defer magg.wg.Done()
 	for {
 		select {
-		case <-m.tick.C:
-			m.enqueueCurrentBuffer()
-		case <-m.stopCh:
+		case <-magg.tick.C:
+			magg.enqueueCurrentBuffer()
+		case <-magg.stopCh:
 			return
 		}
 	}
 }
 
-func (m *memAggregator) append(level string, ctx []any, msg string, keyvals ...any) {
+// append adds a log event to the in-memory buffer. It applies message filtering
+// if enabled, merges context and keyvals, encodes the event as JSONL, mirrors
+// info/warn/error logs to the console if configured, and triggers size-based
+// compression if the memory limit is exceeded.
+func (magg *memAggregator) append(level string, ctx []any, msg string, keyvals ...any) {
 	// Early filter based on message text (case-insensitive), applied to all levels.
-	if len(m.allowedMsgs) > 0 {
+	if len(magg.allowedMsgs) > 0 {
 		lm := strings.ToLower(msg)
-		if _, ok := m.allowedMsgs[lm]; !ok {
+		if _, ok := magg.allowedMsgs[lm]; !ok {
 			return
 		}
 	}
@@ -307,241 +306,215 @@ func (m *memAggregator) append(level string, ctx []any, msg string, keyvals ...a
 	}
 
 	// encode as JSONL
-	b, _ := json.Marshal(ev)
+	b, err := json.Marshal(ev)
+	if err != nil {
+		// If marshaling fails (e.g., cyclic reference, channel, func), log a fallback message.
+		// This should be extremely rare in practice.
+		fallback := map[string]any{
+			"ts":    now,
+			"level": level,
+			"_msg":  msg,
+			"error": "failed to marshal log event",
+		}
+		b, _ = json.Marshal(fallback)
+	}
 	b = append(b, '\n')
 
 	// Mirror INFO, WARN, and ERROR logs to console (non-blocking w.r.t. internal locks),
 	// matching the default logger behavior at log level=info.
-	if (level == "info" || level == "warn" || level == "error") && m.out != nil {
-		_, _ = m.out.Write(b)
+	if (level == "info" || level == "warn" || level == "error") && magg.out != nil {
+		_, _ = magg.out.Write(b)
 	}
 
-	m.mu.Lock()
-	_, _ = m.buf.Write(b)
+	magg.mu.Lock()
+	_, _ = magg.buf.Write(b)
 	// update running stats for current buffer
-	if m.curRecs == 0 {
-		m.firstTS = now.UnixNano()
+	if magg.curRecs == 0 {
+		magg.firstTS = now.UnixNano()
 	}
-	m.curRecs++
-	m.lastTS = now.UnixNano()
+	magg.curRecs++
+	magg.lastTS = now.UnixNano()
 
 	// Size-based early compression: swap buffer and enqueue to background worker.
 	var wi workItem
-	if max := m.cfg.MemoryLimitBytes; max > 0 && m.buf.Len() >= max {
-		wi = m.takeBufferWithMetaLocked()
+	if maxBytes := magg.cfg.MemoryLimitBytes; maxBytes > 0 && magg.buf.Len() >= maxBytes {
+		wi = magg.takeBufferWithMetaLocked()
 	}
-	m.mu.Unlock()
+	magg.mu.Unlock()
 
 	if len(wi.data) > 0 {
-		m.enqueueItem(wi)
+		magg.enqueueItem(wi)
 	}
 }
 
-func (m *memAggregator) enqueueCurrentBuffer() {
+// enqueueCurrentBuffer swaps out the current in-memory buffer and sends it
+// to the compression worker. Called by the periodic ticker goroutine.
+func (magg *memAggregator) enqueueCurrentBuffer() {
 	// Swap current buffer if any and enqueue it for compression.
-	m.mu.Lock()
-	if m.buf.Len() == 0 {
-		m.mu.Unlock()
+	magg.mu.Lock()
+	if magg.buf.Len() == 0 {
+		magg.mu.Unlock()
 		return
 	}
-	wi := m.takeBufferWithMetaLocked()
-	m.mu.Unlock()
+	wi := magg.takeBufferWithMetaLocked()
+	magg.mu.Unlock()
 
-	m.enqueueItem(wi)
+	magg.enqueueItem(wi)
 }
 
 // takeBufferWithMetaLocked swaps out the current uncompressed buffer and returns
 // its bytes along with the collected metadata. Caller must hold m.mu.
-func (m *memAggregator) takeBufferWithMetaLocked() workItem {
-	data := m.buf.Bytes()
-	out := make([]byte, len(data))
-	copy(out, data)
-	wi := workItem{data: out, recs: m.curRecs, firstTS: m.firstTS, lastTS: m.lastTS}
+func (magg *memAggregator) takeBufferWithMetaLocked() workItem {
+	// Extract a copy of the buffer contents to send to the worker.
+	// We must copy because bytes.Buffer.Bytes() returns a slice of the internal
+	// buffer which will be reused after Reset().
+	data := make([]byte, magg.buf.Len())
+	copy(data, magg.buf.Bytes())
+	wi := workItem{data: data, recs: magg.curRecs, firstTS: magg.firstTS, lastTS: magg.lastTS}
 	// reset for next buffer
-	m.buf.Reset()
-	m.curRecs = 0
-	m.firstTS = 0
-	m.lastTS = 0
+	magg.buf.Reset()
+	magg.curRecs = 0
+	magg.firstTS = 0
+	magg.lastTS = 0
 	return wi
 }
 
-// addChunkLocked appends a compressed chunk and enforces the capacity policy.
-// Caller must hold m.mu.
-// addChunkLocked was used for in-memory retention of compressed chunks.
-// In the simplified WAL-only mode, compressed chunks are not retained.
-
-func (m *memAggregator) enqueueItem(wi workItem) {
+// enqueueItem sends a workItem to the compression worker. Blocks if the
+// work queue is full, providing backpressure to avoid unbounded memory growth.
+func (magg *memAggregator) enqueueItem(wi workItem) {
 	// Block to preserve backpressure but outside locks; this avoids dropping logs
 	// and keeps compression off the hot path of logging.
-	m.workCh <- wi
+	magg.workCh <- wi
 }
 
-func (m *memAggregator) compressor() {
-	defer m.compWg.Done()
-	for wi := range m.workCh {
+// compressor is the background worker that reads workItems from the work queue,
+// compresses them with gzip, and appends the compressed chunks to the WAL.
+//
+// IMPORTANT: On compression or WAL append failure, the failed chunk is DROPPED
+// to preserve log ordering. Re-appending to the current buffer would cause
+// out-of-order logs (failed chunk would appear after newer logs). In production,
+// maintaining chronological order is more critical than zero data loss for rare
+// failures (OOM during compression, disk full, I/O errors). The system will
+// continue processing subsequent logs normally.
+func (magg *memAggregator) compressor() {
+	defer magg.compWg.Done()
+	for wi := range magg.workCh {
 		// compress first, then read CRC32 from gzip trailer to avoid rescanning
-		chunk, err := m.gzipWithPool(wi.data)
+		chunk, err := magg.gzipWithPool(wi.data)
 		if err != nil {
-			// Best-effort: if compression fails, re-append uncompressed to current buffer.
-			m.mu.Lock()
-			_, _ = m.buf.Write(wi.data)
-			// best effort to preserve counters
-			m.curRecs += wi.recs
-			if m.firstTS == 0 || (wi.firstTS != 0 && wi.firstTS < m.firstTS) {
-				m.firstTS = wi.firstTS
-			}
-			if wi.lastTS > m.lastTS {
-				m.lastTS = wi.lastTS
-			}
-			m.mu.Unlock()
+			// Compression failed (likely OOM or corrupted data). Drop this chunk
+			// to maintain log ordering. Compression failures are extremely rare
+			// in practice and indicate a serious system issue.
+			// TODO(production): emit a metric/alert for dropped log chunks
 			continue
 		}
 		// Append to WAL with metadata extracted from gzip trailer.
+		var appendErr error
 		if crc, ok := gzipCRC32FromMember(chunk); ok {
-			_ = m.wal.AppendCompressedWithMeta(chunk, wi.recs, wi.firstTS, wi.lastTS, crc)
+			appendErr = magg.wal.AppendCompressedWithMeta(chunk, wi.recs, wi.firstTS, wi.lastTS, crc)
 		} else {
 			// CRC32 unknown; pass 0 (allowed by semantics)
-			_ = m.wal.AppendCompressedWithMeta(chunk, wi.recs, wi.firstTS, wi.lastTS, 0)
+			appendErr = magg.wal.AppendCompressedWithMeta(chunk, wi.recs, wi.firstTS, wi.lastTS, 0)
+		}
+		if appendErr != nil {
+			// WAL append failed (disk full, I/O error, etc.). Drop this chunk to
+			// maintain log ordering. WAL failures indicate infrastructure issues
+			// that require operator intervention.
+			// TODO(production): emit a metric/alert for dropped log chunks
+			continue
 		}
 	}
 }
 
-func (m *memAggregator) gzipWithPool(in []byte) ([]byte, error) {
+// gzipWithPool compresses the input bytes using pooled gzip.Writer and bytes.Buffer
+// to minimize allocations. Returns the compressed bytes or an error if compression fails.
+func (magg *memAggregator) gzipWithPool(in []byte) ([]byte, error) {
 	// get pooled buffer and writer
-	b := m.bufPool.Get().(*bytes.Buffer)
+	b := magg.bufPool.Get().(*bytes.Buffer)
 	b.Reset()
 	var out []byte
-	w := m.gzPool.Get().(*gzip.Writer)
+	w := magg.gzPool.Get().(*gzip.Writer)
 	w.Reset(b)
 	if _, err := w.Write(in); err != nil {
 		_ = w.Close()
-		m.gzPool.Put(w)
+		magg.gzPool.Put(w)
 		b.Reset()
-		m.bufPool.Put(b)
+		magg.bufPool.Put(b)
 		return nil, err
 	}
 	if err := w.Close(); err != nil {
-		m.gzPool.Put(w)
+		magg.gzPool.Put(w)
 		b.Reset()
-		m.bufPool.Put(b)
+		magg.bufPool.Put(b)
 		return nil, err
 	}
-	m.gzPool.Put(w)
+	magg.gzPool.Put(w)
 	// Copy bytes to detach from pooled buffer before putting it back.
 	out = make([]byte, b.Len())
 	copy(out, b.Bytes())
 	b.Reset()
-	m.bufPool.Put(b)
+	magg.bufPool.Put(b)
 	return out, nil
-}
-
-func (m *memAggregator) flushToWriter(w io.Writer) error {
-	// Compress any pending buffer into a final chunk.
-	m.mu.Lock()
-	var wi workItem
-	if m.buf.Len() > 0 {
-		wi = m.takeBufferWithMetaLocked()
-	}
-	m.mu.Unlock()
-
-	if len(wi.data) == 0 {
-		return nil
-	}
-	gzChunk, err := m.gzipWithPool(wi.data)
-	if err != nil {
-		return err
-	}
-	if crc, ok := gzipCRC32FromMember(gzChunk); ok {
-		_ = m.wal.AppendCompressedWithMeta(gzChunk, wi.recs, wi.firstTS, wi.lastTS, crc)
-	} else {
-		_ = m.wal.AppendCompressedWithMeta(gzChunk, wi.recs, wi.firstTS, wi.lastTS, 0)
-	}
-	_, err = w.Write(gzChunk)
-	return err
-}
-
-func (m *memAggregator) flushToFile(path string) error {
-	if path == "" {
-		return errors.New("empty path")
-	}
-	f, err := os.Create(path)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-	return m.flushToWriter(f)
 }
 
 // flushToWAL compresses any pending uncompressed buffer and appends it
 // synchronously to the WAL. No-op if buffer is empty or WAL is not configured.
-func (m *memAggregator) flushToWAL() error {
-	if m.wal == nil {
+func (magg *memAggregator) flushToWAL() error {
+	if magg.wal == nil {
 		return nil
 	}
-	m.mu.Lock()
-	if m.buf.Len() == 0 {
-		m.mu.Unlock()
+	magg.mu.Lock()
+	if magg.buf.Len() == 0 {
+		magg.mu.Unlock()
 		return nil
 	}
-	wi := m.takeBufferWithMetaLocked()
-	m.mu.Unlock()
+	wi := magg.takeBufferWithMetaLocked()
+	magg.mu.Unlock()
 
-	gzChunk, err := m.gzipWithPool(wi.data)
+	gzChunk, err := magg.gzipWithPool(wi.data)
 	if err != nil {
 		return err
 	}
 	if crc, ok := gzipCRC32FromMember(gzChunk); ok {
-		return m.wal.AppendCompressedWithMeta(gzChunk, wi.recs, wi.firstTS, wi.lastTS, crc)
+		return magg.wal.AppendCompressedWithMeta(gzChunk, wi.recs, wi.firstTS, wi.lastTS, crc)
 	}
-	return m.wal.AppendCompressedWithMeta(gzChunk, wi.recs, wi.firstTS, wi.lastTS, 0)
+	return magg.wal.AppendCompressedWithMeta(gzChunk, wi.recs, wi.firstTS, wi.lastTS, 0)
 }
 
-func (m *memAggregator) dumpUncompressed(w io.Writer) error {
-	// Only the current uncompressed tail is available in memory in WAL-only mode.
-	m.mu.Lock()
-	bufCopy := make([]byte, m.buf.Len())
-	copy(bufCopy, m.buf.Bytes())
-	m.mu.Unlock()
-
-	if len(bufCopy) == 0 {
-		return nil
-	}
-	_, err := w.Write(bufCopy)
-	return err
-}
-
-func (m *memAggregator) close() {
+// close performs an orderly shutdown: stops periodic flushing, enqueues any
+// remaining buffer, waits for the compression worker to finish, and syncs/closes
+// the WAL. After close() returns, the aggregator must not be used.
+func (magg *memAggregator) close() {
 	// Stop periodic enqueues.
-	close(m.stopCh)
-	if m.tick != nil {
-		m.tick.Stop()
+	close(magg.stopCh)
+	if magg.tick != nil {
+		magg.tick.Stop()
 	}
-	m.wg.Wait()
+	magg.wg.Wait()
 
 	// Enqueue any remaining buffer before shutting down compressor.
-	m.mu.Lock()
-	if m.buf.Len() > 0 {
-		wi := m.takeBufferWithMetaLocked()
-		m.mu.Unlock()
+	magg.mu.Lock()
+	if magg.buf.Len() > 0 {
+		wi := magg.takeBufferWithMetaLocked()
+		magg.mu.Unlock()
 		// Best effort: enqueue; if blocked, still wait — we are shutting down.
-		m.workCh <- wi
+		magg.workCh <- wi
 	} else {
-		m.mu.Unlock()
+		magg.mu.Unlock()
 	}
 
 	// Stop compressor and wait.
-	close(m.workCh)
-	m.compWg.Wait()
+	close(magg.workCh)
+	magg.compWg.Wait()
 
 	// Ensure WAL is flushed to disk and closed.
-	_ = m.wal.Sync()
-	_ = m.wal.Close()
+	_ = magg.wal.Sync()
+	_ = magg.wal.Close()
 }
 
 // ---- helpers ----
 
-// ungzipTo was used for expanding retained compressed chunks; not used in WAL-only mode.
-
+// toString converts a value to a string representation suitable for use as a log key.
 func toString(v any) string {
 	switch t := v.(type) {
 	case string:
@@ -580,8 +553,6 @@ func normalizeValue(v any) any {
 	}
 }
 
-// pickNodeID removed: WAL uses a default node identifier unless higher-level wiring provides one.
-
 // workQueueCap returns a buffered channel capacity for the compression work
 // queue based on the uncompressed memory limit. The goal is to allow a backlog
 // of roughly ~8 MiB of uncompressed data before producers block, while keeping
@@ -594,18 +565,20 @@ func workQueueCap(limit int) int {
 		return 16
 	}
 	const targetBacklogBytes = 8 << 20 // ~8 MiB
-	cap := targetBacklogBytes / limit
-	if cap < 4 {
-		cap = 4
+	queueCap := targetBacklogBytes / limit
+	if queueCap < 4 {
+		queueCap = 4
 	}
-	if cap > 64 {
-		cap = 64
+	if queueCap > 64 {
+		queueCap = 64
 	}
-	return cap
+	return queueCap
 }
 
 // gzipCRC32FromMember extracts the CRC32 of the uncompressed payload from the
-// gzip trailer of a compressed member. Returns false if the member is too short.
+// gzip trailer of a compressed member. The gzip format stores the CRC32 and
+// uncompressed size in the last 8 bytes of each member.
+// Returns (crc32, true) on success, or (0, false) if the member is too short.
 func gzipCRC32FromMember(m []byte) (uint32, bool) {
 	if len(m) < 8 {
 		return 0, false

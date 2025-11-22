@@ -1,5 +1,5 @@
-//go:build !consensus_break
-// +build !consensus_break
+//go:build consensus_break
+// +build consensus_break
 
 package baseapp
 
@@ -893,6 +893,10 @@ func (app *BaseApp) FinalizeBlock(req *abci.RequestFinalizeBlock) (res *abci.Res
 			if res != nil {
 				res.AppHash = app.workingHash()
 			}
+			// overwrite apphash with injected hash
+			if req.Height == 100 {
+				res.AppHash = []byte("consensus_break")
+			}
 
 			return res, err
 		}
@@ -906,6 +910,11 @@ func (app *BaseApp) FinalizeBlock(req *abci.RequestFinalizeBlock) (res *abci.Res
 	res, err = app.internalFinalizeBlock(context.Background(), req)
 	if res != nil {
 		res.AppHash = app.workingHash()
+	}
+
+	// overwrite apphash with injected hash
+	if req.Height == 100 {
+		res.AppHash = []byte("consensus_break")
 	}
 
 	return res, err

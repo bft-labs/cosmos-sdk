@@ -36,6 +36,7 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 
 	pruningtypes "cosmossdk.io/store/pruning/types"
+	"cosmossdk.io/store/tracekv"
 
 	"github.com/cosmos/cosmos-sdk/client"
 	"github.com/cosmos/cosmos-sdk/client/flags"
@@ -431,16 +432,21 @@ func getGenDocProvider(cfg *cmtcfg.Config) func() (*cmttypes.GenesisDoc, error) 
 }
 
 func setupTraceWriter(svrCtx *Context) (traceWriter io.WriteCloser, cleanup func(), err error) {
-	// clean up the traceWriter when the server is shutting down
 	cleanup = func() {}
 
-	traceWriterFile := svrCtx.Viper.GetString(flagTraceStore)
-	traceWriter, err = openTraceWriter(traceWriterFile)
-	if err != nil {
-		return traceWriter, cleanup, err
+	switch {
+	case svrCtx.Viper.GetBool(FlagMemLogEnabled):
+		traceWriter = tracekv.NewTraceWriter(svrCtx.Logger)
+	case svrCtx.Viper.GetString(flagTraceStore) != "":
+		traceWriterFile := svrCtx.Viper.GetString(flagTraceStore)
+		traceWriter, err = openTraceWriter(traceWriterFile)
+		if err != nil {
+			return nil, cleanup, err
+		}
+	default:
+		return nil, cleanup, nil
 	}
 
-	// if flagTraceStore is not used then traceWriter is nil
 	if traceWriter != nil {
 		cleanup = func() {
 			if err = traceWriter.Close(); err != nil {

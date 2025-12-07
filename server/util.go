@@ -175,7 +175,7 @@ func CreateSDKLogger(ctx *Context, out io.Writer) (log.Logger, error) {
 		return nil, err
 	}
 	// If memlogger is enabled (via flag or app config), return the in-memory compressing logger.
-	useMemlog := ctx.Viper.GetBool("memlogger.enabled")
+	useMemlog := ctx.Viper.GetBool(FlagMemLogEnabled)
 	if useMemlog {
 		nodeKey, err := p2p.LoadOrGenNodeKey(ctx.Config.NodeKeyFile())
 		if err != nil {

@@ -6,8 +6,7 @@ import "strings"
 // that should be recorded by memlogger when filtering is enabled.
 // Matching is case-insensitive and uses exact string equality after lowercasing.
 func buildDefaultAllowedMsgs() map[string]struct{} {
-	var msgs = make([]string, 10)
-	msgs = append(msgs, storageMsgs()...)
+	msgs := storageMsgs()
 	out := make(map[string]struct{}, len(msgs))
 	for _, m := range msgs {
 		out[strings.ToLower(m)] = struct{}{}

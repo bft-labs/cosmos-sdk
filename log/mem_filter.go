@@ -52,10 +52,11 @@ func buildDefaultAllowedMsgs() map[string]struct{} {
 
 		// Storage
 		"Store working hash",
+		"hash of all writes",
+		"tx result detail",
+		"hash of tx results",
+		"finalized block",
+		"store trace set",
+		"CONSENSUS FAILURE!!!",
 	}
-	out := make(map[string]struct{}, len(msgs))
-	for _, m := range msgs {
-		out[strings.ToLower(m)] = struct{}{}
-	}
-	return out
 }

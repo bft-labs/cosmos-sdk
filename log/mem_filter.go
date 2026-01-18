@@ -72,6 +72,7 @@ func storageMsgs() []string {
 		"hash of all writes",
 		"finalized block",
 		"store trace set",
+		"store change set",
 		"CONSENSUS FAILURE!!!",
 	}
 }

@@ -950,7 +950,6 @@ func (app *BaseApp) runTx(mode execMode, txBytes []byte, tx sdk.Tx) (gInfo sdk.G
 			}
 			return gInfo, nil, nil, err
 		}
-
 		msCache.Write()
 		anteEvents = events.ToABCIEvents()
 	}

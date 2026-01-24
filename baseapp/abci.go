@@ -829,6 +829,10 @@ func (app *BaseApp) internalFinalizeBlock(ctx context.Context, req *abci.Request
 	}
 
 	if app.finalizeBlockState.ms.TracingEnabled() {
+		// Flush trace buffer before resetting context
+		if flusher, ok := app.cms.(*rootmulti.Store).GetTracer().(interface{ Flush() }); ok {
+			flusher.Flush()
+		}
 		app.finalizeBlockState.ms = app.finalizeBlockState.ms.SetTracingContext(nil).(storetypes.CacheMultiStore)
 	}
 

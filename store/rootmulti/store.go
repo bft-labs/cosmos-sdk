@@ -402,6 +402,11 @@ func (rs *Store) TracingEnabled() bool {
 	return rs.traceWriter != nil
 }
 
+// GetTracer returns the trace writer for the MultiStore.
+func (rs *Store) GetTracer() io.Writer {
+	return rs.traceWriter
+}
+
 // AddListeners adds a listener for the KVStore belonging to the provided StoreKey
 func (rs *Store) AddListeners(keys []types.StoreKey) {
 	for i := range keys {

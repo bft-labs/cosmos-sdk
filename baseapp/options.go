@@ -7,10 +7,12 @@ import (
 
 	dbm "github.com/cosmos/cosmos-db"
 
+	"cosmossdk.io/log"
 	"cosmossdk.io/store/metrics"
 	pruningtypes "cosmossdk.io/store/pruning/types"
 	"cosmossdk.io/store/snapshots"
 	snapshottypes "cosmossdk.io/store/snapshots/types"
+	"cosmossdk.io/store/tracekv"
 	storetypes "cosmossdk.io/store/types"
 
 	"github.com/cosmos/cosmos-sdk/baseapp/oe"
@@ -273,8 +275,15 @@ func (app *BaseApp) SetNotSigverifyTx() {
 }
 
 // SetCommitMultiStoreTracer sets the store tracer on the BaseApp's underlying
-// CommitMultiStore.
+// CommitMultiStore. If w is nil and the logger is a MemLogger, a TraceWriter
+// is automatically created to enable store tracing for the MemLogger.
 func (app *BaseApp) SetCommitMultiStoreTracer(w io.Writer) {
+	if w == nil {
+		if _, ok := app.logger.Impl().(*log.MemLogger); ok {
+			app.logger.Info("Auto-enabled store tracing for MemLogger")
+			w = tracekv.NewTraceWriter(app.logger)
+		}
+	}
 	app.cms.SetTracer(w)
 }
 

@@ -70,6 +70,8 @@ func storageMsgs() []string {
 	return []string{
 		"Store working hash",
 		"hash of all writes",
+		"tx result detail",
+		"hash of tx results",
 		"finalized block",
 		"store trace set",
 		"store change set",

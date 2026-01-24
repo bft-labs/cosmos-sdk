@@ -10,6 +10,7 @@ import (
 	"github.com/cockroachdb/errors"
 	abci "github.com/cometbft/cometbft/abci/types"
 	cmtproto "github.com/cometbft/cometbft/proto/tendermint/types"
+	cmttypes "github.com/cometbft/cometbft/types"
 	"github.com/cosmos/gogoproto/proto"
 	"google.golang.org/grpc/codes"
 	grpcstatus "google.golang.org/grpc/status"
@@ -875,6 +876,10 @@ func (app *BaseApp) FinalizeBlock(req *abci.RequestFinalizeBlock) (res *abci.Res
 		if res == nil {
 			return
 		}
+
+		// Log TxResults hash
+		app.logTxResults(req, res)
+
 		// call the streaming service hooks with the FinalizeBlock messages
 		for _, streamingListener := range app.streamingManager.ABCIListeners {
 			if err := streamingListener.ListenFinalizeBlock(app.finalizeBlockState.Context(), *req, *res); err != nil {
@@ -1003,6 +1008,40 @@ func (app *BaseApp) workingHash() []byte {
 	app.logger.Debug("hash of all writes", "workingHash", fmt.Sprintf("%X", commitHash))
 
 	return commitHash
+}
+
+// logTxResults logs detailed information about each TxResult for debugging
+// The logs are captured by MemLogger for analysis when consensus fails.
+func (app *BaseApp) logTxResults(req *abci.RequestFinalizeBlock, res *abci.ResponseFinalizeBlock) {
+	if res == nil {
+		return
+	}
+
+	for i, txResult := range res.TxResults {
+		var txHash, txContent string
+		if i < len(req.Txs) {
+			tx := cmttypes.Tx(req.Txs[i])
+			txHash = fmt.Sprintf("%X", tx.Hash())
+			txContent = fmt.Sprintf("%X", tx)
+		}
+
+		// Log only deterministic fields used by LastResultsHash:
+		app.logger.Debug("tx result detail",
+			"index", i,
+			"txHash", txHash,
+			"txContent", txContent,
+			"code", txResult.Code,
+			"data", fmt.Sprintf("%X", txResult.Data),
+			"gasWanted", txResult.GasWanted,
+			"gasUsed", txResult.GasUsed,
+		)
+	}
+
+	totalHash := cmttypes.NewResults(res.TxResults).Hash()
+	app.logger.Debug("hash of tx results",
+		"count", len(res.TxResults),
+		"txResultsHash", fmt.Sprintf("%X", totalHash),
+	)
 }
 
 func handleQueryApp(app *BaseApp, path []string, req *abci.RequestQuery) *abci.ResponseQuery {

@@ -436,7 +436,16 @@ func setupTraceWriter(svrCtx *Context) (traceWriter io.WriteCloser, cleanup func
 
 	switch {
 	case svrCtx.Viper.GetBool(FlagMemLogEnabled):
-		traceWriter = tracekv.NewTraceWriter(svrCtx.Logger)
+		baseDir := svrCtx.Viper.GetString(FlagMemLogOutputDir)
+		if baseDir == "" {
+			baseDir = svrCtx.Config.RootDir
+		}
+		traceDir := filepath.Join(baseDir, "traces")
+		maxBytes := svrCtx.Viper.GetInt(FlagMemLogMemoryLimit)
+		traceWriter, err = tracekv.NewTraceFileWriterWithSize(traceDir, maxBytes)
+		if err != nil {
+			return nil, cleanup, err
+		}
 	case svrCtx.Viper.GetString(flagTraceStore) != "":
 		traceWriterFile := svrCtx.Viper.GetString(flagTraceStore)
 		traceWriter, err = openTraceWriter(traceWriterFile)

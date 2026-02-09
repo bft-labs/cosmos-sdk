@@ -73,7 +73,6 @@ func storageMsgs() []string {
 		"tx result detail",
 		"hash of tx results",
 		"finalized block",
-		"store trace set",
 		"store change set",
 		"CONSENSUS FAILURE!!!",
 	}
